@@ -1,0 +1,142 @@
+#define GRID_X 1 
+#define GRID_Y 1 
+#define GRID_Z 1 
+#define GRID_NX 30 
+#define GRID_NY 30 
+#define GRID_NZ 30 
+void initializeArrays(double sourcePoints[GRID_NX][GRID_NY][GRID_NZ], 
+double temperature[GRID_NX][GRID_NY][GRID_NZ], 
+double tempTemperature[GRID_NX][GRID_NY][GRID_NZ]) 
+{ 
+    #pragma omp parallel for collapse(3)
+    for (int i = 0; i < GRID_NX; i++) {
+        for (int j = 0; j < GRID_NY; j++) {
+            for (int k = 0; k < GRID_NZ; k++) {
+                sourcePoints[i][j][k] = 0; 
+                temperature[i][j][k] = 0; 
+                tempTemperature[i][j][k] = 0; 
+            }
+        }
+    }
+}
+void applyBoundaryConditions(double temperature[GRID_NX][GRID_NY][GRID_NZ], 
+double tempTemperature[GRID_NX][GRID_NY][GRID_NZ], 
+int numDirichletConditions, 
+char dirichletTemps[][20], 
+int numNeumannConditions, 
+char neumannGradients[][20]) 
+{
+    // Apply Dirichlet conditions
+    #pragma omp parallel for
+    for (int d = 0; d < numDirichletConditions; d++) {
+        int face = d % 6; 
+        double dirichletTemp = (strcmp(dirichletTemps[d], "NA") == 0) ? NAN : strtod(dirichletTemps[d], NULL);
+        switch (face) {
+            case 0: // Left face
+            // Apply boundary conditions here...
+        }
+    }
+    // Apply Neumann conditions
+    #pragma omp parallel for
+    for (int n = 0; n < numNeumannConditions; n++) {
+        int face = n % 6; 
+        double neumannGradient = (strcmp(neumannGradients[n],"NA") == 0) ? NAN: strtod(neumannGradients[n], NULL);
+        switch (face) {
+            case 0: // Left face
+            // Apply boundary conditions here...
+        }
+    }
+}
+void performSORIterations(double temperature[GRID_NX][GRID_NY][GRID_NZ], 
+double tempTemperature[GRID_NX][GRID_NY][GRID_NZ], 
+double sourcePoints[GRID_NX][GRID_NY][GRID_NZ], 
+double gridSpacingX, 
+double gridSpacingY, 
+double gridSpacingZ, 
+double relaxationFactor, 
+double errorLimit, 
+int maxIterations) 
+{
+    double convergenceError = 0; 
+    #pragma omp parallel shared(temperature, tempTemperature, sourcePoints, gridSpacingX, gridSpacingY, 
+    gridSpacingZ, relaxationFactor, convergenceError, errorLimit, maxIterations) 
+    { 
+        for (int iteration = 1; iteration < maxIterations; iteration++) {
+            double localError = 0; 
+            #pragma omp for reduction(max : localError) collapse(3)
+            for (int i = 1; i < GRID_NX - 1; i++) {
+                for (int j = 1; j < GRID_NY - 1; j++) {
+                    for (int k = 1; k < GRID_NZ - 1; k++) {
+                        double newValue = (tempTemperature[i + 1][j][k] + tempTemperature[i - 1][j][k] + 
+                        tempTemperature[i][j + 1][k] + tempTemperature[i][j - 1][k] + tempTemperature[i][j][k + 1] + 
+                        tempTemperature[i][j][k - 1] - (gridSpacingX * gridSpacingY * gridSpacingZ) * sourcePoints[i][j][k]) / 6.0;
+                        temperature[i][j][k] = relaxationFactor * newValue + (1 - relaxationFactor) * tempTemperature[i][j][k];
+                        double localDiff = fabs(temperature[i][j][k] - tempTemperature[i][j][k]); 
+                        if (localError < localDiff) {
+                            localError = localDiff;
+                        }
+                    }
+                }
+            }
+            // Check for convergence
+            #pragma omp atomic
+            convergenceError = localError;
+            if (convergenceError < errorLimit) {
+                break;
+            }
+            // Swap temperature arrays
+            #pragma omp for collapse(3)
+            for (int i = 0; i < GRID_NX; i++) {
+                for (int j = 0; j < GRID_NY; j++) {
+                    for (int k = 0; k < GRID_NZ; k++) {
+                        tempTemperature[i][j][k] = temperature[i][j][k];
+                    }
+                }
+            }
+        }
+    }
+}
+int main(int argc, char **argv) 
+{
+    double gridSpacingX = GRID_X / (GRID_NX - 1); 
+    double gridSpacingY = GRID_Y / (GRID_NY - 1); 
+    double gridSpacingZ = GRID_Z / (GRID_NZ - 1);
+    
+    double sourcePoints[GRID_NX][GRID_NY][GRID_NZ]; 
+    double temperature[GRID_NX][GRID_NY][GRID_NZ]; 
+    double tempTemperature[GRID_NX][GRID_NY][GRID_NZ];
+    
+    initializeArrays(sourcePoints, temperature, tempTemperature);
+
+    int numDirichletConditions = 0; 
+    char dirichletTemps[6][20];
+    int numNeumannConditions = 0; 
+    char neumannGradients[6][20];
+    
+    // Get user input for boundary conditions...
+    
+    applyBoundaryConditions(temperature, tempTemperature, numDirichletConditions, dirichletTemps, numNeumannConditions, neumannGradients);
+
+    double relaxationFactor = 1; 
+    double errorLimit = pow(10, -10); 
+    int maxIterations = 100000;
+
+    performSORIterations(temperature, tempTemperature, sourcePoints, gridSpacingX, gridSpacingY, gridSpacingZ, relaxationFactor, errorLimit, maxIterations);
+
+    FILE *outputFile = fopen("temperature.txt", "w");
+    if (outputFile == NULL) {
+        perror("Error opening the output file");
+        return 1;
+    }
+
+    for (int i = 0; i < GRID_NX; i++) {
+        for (int j = 0; j < GRID_NY; j++) {
+            for (int k = 0; k < GRID_NZ; k++) {
+                fprintf(outputFile, "%lf ", temperature[i][j][k]);
+            }
+            fprintf(outputFile, "\n");
+        }
+    }
+    fclose(outputFile);
+    return 0;
+}
